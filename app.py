@@ -11,13 +11,14 @@ from routes.predict import predict_bp
 
 app = Flask(__name__)
 
-# CORS: allow both local dev and production domain
+# CORS: allow local dev, production domain, and Vercel previews
 CORS(app, origins=[
     "http://localhost:8080",
     "http://localhost:5173",
     "https://fraudguard.live",
     "https://www.fraudguard.live",
-])
+    "https://fraudguard-frontend.vercel.app",
+], supports_credentials=True)
 
 # Register route blueprints
 app.register_blueprint(predict_bp)
