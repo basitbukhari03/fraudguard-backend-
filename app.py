@@ -8,6 +8,7 @@ import os
 from flask import Flask, jsonify
 from flask_cors import CORS
 from routes.predict import predict_bp
+from routes.auth import auth_bp
 
 app = Flask(__name__)
 
@@ -22,6 +23,7 @@ CORS(app, origins=[
 
 # Register route blueprints
 app.register_blueprint(predict_bp)
+app.register_blueprint(auth_bp)
 
 
 @app.route("/")
@@ -29,9 +31,12 @@ def home():
     return jsonify({
         "status": "running",
         "service": "Fraud Detection API",
-        "version": "2.0",
+        "version": "3.0",
         "endpoints": {
-            "POST /predict": "Analyze a transaction for fraud"
+            "POST /predict": "Analyze a transaction for fraud",
+            "POST /auth/register": "Create a new user account",
+            "POST /auth/login": "Login with email and password",
+            "GET /auth/me": "Get current user info (requires JWT)"
         }
     })
 
@@ -40,3 +45,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_ENV") != "production"
     app.run(host="0.0.0.0", port=port, debug=debug)
+

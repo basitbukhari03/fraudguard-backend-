@@ -6,3 +6,6 @@ pandas
 scikit-learn
 xgboost
 joblib
+pymongo[srv]
+bcrypt
+PyJWT
