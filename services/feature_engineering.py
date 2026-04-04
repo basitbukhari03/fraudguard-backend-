@@ -160,14 +160,12 @@ def synthesize_model_features(amount: float, hour: int, day: int,
 
     # ── Slot 0: Time ──
     # Original dataset: Time is seconds elapsed (0 - 172800)
-    # Map hour to a reasonable range
     features[0] = hour * 3600.0 + day * 60.0
 
     # ── Slot 29: Amount ──
     features[29] = amount
 
     # ── V1 (slot 1): Strong general fraud indicator ──
-    # Fraud transactions tend to have large negative V1
     if risk_score > 0.5:
         features[1] = -2.0 - risk_score * 3.0 + txn_hash * 0.5
     elif risk_score > 0.25:
@@ -175,18 +173,16 @@ def synthesize_model_features(amount: float, hour: int, day: int,
     else:
         features[1] = 1.5 - risk_score * 2.0
 
-    # ── V2 (slot 2): Amount-correlated component ──
+    # ── V2 (slot 2): Amount-correlated ──
     features[2] = (log_amount - 4.5) * 0.8 + (is_night * -1.2)
 
     # ── V3 (slot 3): Strong fraud separator ──
-    # Fraud: typically large negative V3
     if risk_score > 0.4:
         features[3] = -3.0 * risk_score - is_high_amount * 2.0
     else:
         features[3] = 1.0 - risk_score * 3.0
 
-    # ── V4 (slot 4): Fraud-positive component ──
-    # Fraud transactions tend to have positive V4
+    # ── V4 (slot 4): Positive in fraud ──
     if risk_score > 0.3:
         features[4] = 2.0 * risk_score + is_night * 1.5
     else:
@@ -206,7 +202,6 @@ def synthesize_model_features(amount: float, hour: int, day: int,
     features[9] = -0.5 * risk_score + (month - 6) * 0.05
 
     # ── V10 (slot 10): Important fraud indicator ──
-    # Fraud: strongly negative V10
     if risk_score > 0.4:
         features[10] = -4.0 * risk_score
     else:
@@ -225,7 +220,6 @@ def synthesize_model_features(amount: float, hour: int, day: int,
     features[13] = -0.3 * risk_score
 
     # ── V14 (slot 14): MOST important fraud indicator ──
-    # Strongly negative for fraud in most credit card models
     if risk_score > 0.3:
         features[14] = -5.0 * risk_score - is_high_amount * 2.0
     elif risk_score > 0.15:
@@ -236,13 +230,12 @@ def synthesize_model_features(amount: float, hour: int, day: int,
     # ── V15 (slot 15) ──
     features[15] = 0.3 * risk_score
 
-    # ── V16-V17 (slots 16-17): Moderate importance ──
+    # ── V16-V17 (slots 16-17) ──
     features[16] = -2.0 * risk_score + txn_hash * 0.3
     features[17] = -1.5 * risk_score + is_night * 0.5
 
-    # ── V18-V28 (slots 18-28): Lower importance, add noise ──
+    # ── V18-V28 (slots 18-28): Lower importance ──
     for i in range(18, 29):
-        # Generate deterministic but varied values
         slot_hash = (txn_hash * (i + 1)) % 1.0
         noise = (slot_hash - 0.5) * 0.3
         features[i] = -risk_score * 0.5 * (1.0 + noise)

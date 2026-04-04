@@ -1,0 +1,8 @@
+Normal $150 2PM: 0.0021 (Legit)
+Normal $500 noon: 0.0008 (Legit)
+Night $25000 1130PM: 0.4257 (Legit)
+Suspicious $99999 3AM: 0.6377 (FRAUD)
+Micro $0.50 230AM: 0.9700 (FRAUD)
+Weekend $8000 1AM: 0.6585 (FRAUD)
+Small $50 10AM: 0.0010 (Legit)
+Random $12345 4PM: 0.0056 (Legit)
