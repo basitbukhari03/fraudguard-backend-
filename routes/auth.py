@@ -1,22 +1,113 @@
 """
 Auth Route Blueprint
 ---------------------
-Exposes /auth/register, /auth/login, and /auth/me endpoints
-for user authentication with MongoDB + JWT.
+Exposes /auth/register, /auth/verify, /auth/resend-code,
+/auth/login, and /auth/me endpoints.
+Email verification with OTP is required before login.
 """
 
 import os
+import re
+import random
 import datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
+from flask_mail import Message
 import bcrypt
 import jwt
-from services.database import users_collection
+from services.database import users_collection, verification_codes
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
 # JWT Secret — set in Render environment variables
 JWT_SECRET = os.environ.get("JWT_SECRET", "fraudguard-secret-key-change-in-production")
 JWT_EXPIRY_HOURS = 72  # Token valid for 3 days
+
+# ── Allowed Email Domains ─────────────────────────────────────────
+ALLOWED_DOMAINS = {
+    "gmail.com",
+    "yahoo.com",
+    "yahoo.co.uk",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "icloud.com",
+    "protonmail.com",
+    "proton.me",
+    "aol.com",
+    "mail.com",
+    "zoho.com",
+    "yandex.com",
+    "gmx.com",
+    "gmx.net",
+}
+
+# ── Email Format Regex ────────────────────────────────────────────
+EMAIL_REGEX = re.compile(
+    r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+)
+
+
+def _validate_email(email: str) -> str | None:
+    """Validate email format and domain. Returns error message or None."""
+    if not email or not EMAIL_REGEX.match(email):
+        return "Please enter a valid email address."
+
+    domain = email.split("@")[1].lower()
+    if domain not in ALLOWED_DOMAINS:
+        return (
+            f"Email domain '@{domain}' is not supported. "
+            f"Please use Gmail, Outlook, Yahoo, iCloud, or ProtonMail."
+        )
+    return None
+
+
+def _generate_otp() -> str:
+    """Generate a 6-digit OTP code."""
+    return str(random.randint(100000, 999999))
+
+
+def _send_verification_email(email: str, name: str, code: str):
+    """Send OTP verification email using Flask-Mail."""
+    mail = current_app.extensions.get("mail")
+    if not mail:
+        raise Exception("Mail service not configured.")
+
+    msg = Message(
+        subject=f"FraudGuard — Your Verification Code: {code}",
+        recipients=[email],
+    )
+
+    msg.html = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto;
+                background: #0A0E1A; color: #FFFFFF; padding: 40px; border-radius: 16px;">
+        <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #6C63FF; margin: 0;">FraudGuard</h1>
+            <p style="color: #94A3B8; font-size: 14px;">AI-Powered Fraud Detection</p>
+        </div>
+
+        <p style="color: #E2E8F0;">Hi <strong>{name}</strong>,</p>
+        <p style="color: #94A3B8;">Your verification code is:</p>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <div style="display: inline-block; background: linear-gradient(135deg, #6C63FF, #8B83FF);
+                        padding: 16px 40px; border-radius: 12px; letter-spacing: 8px;">
+                <span style="font-size: 32px; font-weight: bold; color: #FFFFFF;">{code}</span>
+            </div>
+        </div>
+
+        <p style="color: #94A3B8; font-size: 13px;">
+            This code expires in <strong>10 minutes</strong>.<br>
+            If you didn't create a FraudGuard account, you can ignore this email.
+        </p>
+
+        <hr style="border: 1px solid #1E2642; margin: 30px 0;">
+        <p style="color: #64748B; font-size: 11px; text-align: center;">
+            &copy; FraudGuard — Powered by XGBoost ML Pipeline
+        </p>
+    </div>
+    """
+
+    mail.send(msg)
 
 
 def _generate_token(user_id: str, email: str, name: str) -> str:
@@ -31,12 +122,14 @@ def _generate_token(user_id: str, email: str, name: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
+# ── REGISTER ─────────────────────────────────────────────────────
+
 @auth_bp.route("/register", methods=["POST"])
 def register():
     """
     POST /auth/register
     Body: { "name": "...", "email": "...", "password": "..." }
-    Returns: { "token": "...", "user": { "name": "...", "email": "..." } }
+    Returns: { "message": "Verification code sent to email." }
     """
     data = request.get_json(silent=True)
     if not data:
@@ -50,22 +143,56 @@ def register():
     errors = []
     if not name:
         errors.append("Name is required.")
-    if not email or "@" not in email:
-        errors.append("Valid email is required.")
+
+    email_error = _validate_email(email)
+    if email_error:
+        errors.append(email_error)
+
     if not password or len(password) < 6:
         errors.append("Password must be at least 6 characters.")
+
     if errors:
         return jsonify({"error": errors}), 422
+
+    # Check if already registered and verified
+    existing = users_collection.find_one({"email": email})
+    if existing:
+        if existing.get("verified", False):
+            return jsonify({"error": "An account with this email already exists."}), 409
+        else:
+            # Not verified yet — update password and resend code
+            hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+            users_collection.update_one(
+                {"email": email},
+                {"$set": {"name": name, "password": hashed}}
+            )
+            # Generate and send new OTP
+            code = _generate_otp()
+            verification_codes.delete_many({"email": email})
+            verification_codes.insert_one({
+                "email": email,
+                "code": code,
+                "created_at": datetime.datetime.utcnow(),
+            })
+            try:
+                _send_verification_email(email, name, code)
+            except Exception as e:
+                return jsonify({"error": f"Failed to send verification email: {str(e)}"}), 500
+            return jsonify({
+                "message": "Verification code sent to your email.",
+                "email": email,
+            }), 200
 
     # Hash password
     hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
-    # Insert user
+    # Insert user (unverified)
     try:
-        result = users_collection.insert_one({
+        users_collection.insert_one({
             "name": name,
             "email": email,
             "password": hashed,
+            "verified": False,
             "created_at": datetime.datetime.utcnow(),
         })
     except Exception as e:
@@ -73,14 +200,116 @@ def register():
             return jsonify({"error": "An account with this email already exists."}), 409
         return jsonify({"error": f"Registration failed: {str(e)}"}), 500
 
+    # Generate OTP and save
+    code = _generate_otp()
+    verification_codes.insert_one({
+        "email": email,
+        "code": code,
+        "created_at": datetime.datetime.utcnow(),
+    })
+
+    # Send OTP email
+    try:
+        _send_verification_email(email, name, code)
+    except Exception as e:
+        return jsonify({"error": f"Failed to send verification email: {str(e)}"}), 500
+
+    return jsonify({
+        "message": "Verification code sent to your email.",
+        "email": email,
+    }), 201
+
+
+# ── VERIFY EMAIL ──────────────────────────────────────────────────
+
+@auth_bp.route("/verify", methods=["POST"])
+def verify():
+    """
+    POST /auth/verify
+    Body: { "email": "...", "code": "..." }
+    Returns: { "token": "...", "user": { "name": "...", "email": "..." } }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid or missing JSON body."}), 400
+
+    email = data.get("email", "").strip().lower()
+    code = data.get("code", "").strip()
+
+    if not email or not code:
+        return jsonify({"error": "Email and verification code are required."}), 422
+
+    # Find the OTP record
+    record = verification_codes.find_one({"email": email, "code": code})
+    if not record:
+        return jsonify({"error": "Invalid or expired verification code."}), 400
+
+    # Mark user as verified
+    user = users_collection.find_one({"email": email})
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+
+    users_collection.update_one(
+        {"email": email},
+        {"$set": {"verified": True}}
+    )
+
+    # Remove used verification codes
+    verification_codes.delete_many({"email": email})
+
     # Generate token
-    token = _generate_token(str(result.inserted_id), email, name)
+    token = _generate_token(str(user["_id"]), email, user["name"])
 
     return jsonify({
         "token": token,
-        "user": {"name": name, "email": email}
-    }), 201
+        "user": {"name": user["name"], "email": user["email"]}
+    }), 200
 
+
+# ── RESEND CODE ───────────────────────────────────────────────────
+
+@auth_bp.route("/resend-code", methods=["POST"])
+def resend_code():
+    """
+    POST /auth/resend-code
+    Body: { "email": "..." }
+    Returns: { "message": "New verification code sent." }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid or missing JSON body."}), 400
+
+    email = data.get("email", "").strip().lower()
+    if not email:
+        return jsonify({"error": "Email is required."}), 422
+
+    # Find user
+    user = users_collection.find_one({"email": email})
+    if not user:
+        return jsonify({"error": "No account found with this email."}), 404
+
+    if user.get("verified", False):
+        return jsonify({"error": "This email is already verified."}), 400
+
+    # Generate new code
+    code = _generate_otp()
+    verification_codes.delete_many({"email": email})
+    verification_codes.insert_one({
+        "email": email,
+        "code": code,
+        "created_at": datetime.datetime.utcnow(),
+    })
+
+    # Send email
+    try:
+        _send_verification_email(email, user["name"], code)
+    except Exception as e:
+        return jsonify({"error": f"Failed to send email: {str(e)}"}), 500
+
+    return jsonify({"message": "New verification code sent to your email."}), 200
+
+
+# ── LOGIN ─────────────────────────────────────────────────────────
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
@@ -104,6 +333,14 @@ def login():
     if not user:
         return jsonify({"error": "Invalid email or password."}), 401
 
+    # Check if verified
+    if not user.get("verified", False):
+        return jsonify({
+            "error": "Email not verified. Please check your inbox for the verification code.",
+            "unverified": True,
+            "email": email,
+        }), 403
+
     # Verify password
     if not bcrypt.checkpw(password.encode("utf-8"), user["password"]):
         return jsonify({"error": "Invalid email or password."}), 401
@@ -116,6 +353,8 @@ def login():
         "user": {"name": user["name"], "email": user["email"]}
     })
 
+
+# ── ME ────────────────────────────────────────────────────────────
 
 @auth_bp.route("/me", methods=["GET"])
 def me():

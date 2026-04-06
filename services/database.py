@@ -19,6 +19,10 @@ db = client["fraudguard"]
 
 # Collections
 users_collection = db["users"]
+verification_codes = db["verification_codes"]
 
 # Create unique index on email to prevent duplicate signups
 users_collection.create_index("email", unique=True)
+
+# TTL index: auto-delete verification codes after 10 minutes
+verification_codes.create_index("created_at", expireAfterSeconds=600)
