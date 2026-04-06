@@ -10,6 +10,7 @@ import os
 import re
 import random
 import datetime
+import threading
 from flask import Blueprint, request, jsonify, current_app
 from flask_mail import Message
 import bcrypt
@@ -67,10 +68,18 @@ def _generate_otp() -> str:
 
 
 def _send_verification_email(email: str, name: str, code: str):
-    """Send OTP verification email using Flask-Mail."""
+    """Send OTP verification email using Flask-Mail in background thread."""
     mail = current_app.extensions.get("mail")
     if not mail:
-        raise Exception("Mail service not configured.")
+        print("[MAIL] Mail service not configured — skipping email.")
+        return
+
+    # Check if credentials are set
+    username = current_app.config.get("MAIL_USERNAME", "")
+    password = current_app.config.get("MAIL_PASSWORD", "")
+    if not username or not password:
+        print(f"[MAIL] MAIL_USERNAME or MAIL_PASSWORD not set. Username='{username}', Password={'SET' if password else 'EMPTY'}")
+        return
 
     msg = Message(
         subject=f"FraudGuard — Your Verification Code: {code}",
@@ -107,7 +116,21 @@ def _send_verification_email(email: str, name: str, code: str):
     </div>
     """
 
-    mail.send(msg)
+    # Send in background thread so request doesn't hang
+    app = current_app._get_current_object()
+
+    def send_async():
+        try:
+            with app.app_context():
+                mail.send(msg)
+                print(f"[MAIL] ✅ Verification email sent to {email}")
+        except Exception as e:
+            print(f"[MAIL] ❌ Failed to send email to {email}: {str(e)}")
+
+    thread = threading.Thread(target=send_async)
+    thread.daemon = True
+    thread.start()
+    print(f"[MAIL] 📧 Email queued for {email}")
 
 
 def _generate_token(user_id: str, email: str, name: str) -> str:
@@ -174,10 +197,7 @@ def register():
                 "code": code,
                 "created_at": datetime.datetime.utcnow(),
             })
-            try:
-                _send_verification_email(email, name, code)
-            except Exception as e:
-                return jsonify({"error": f"Failed to send verification email: {str(e)}"}), 500
+            _send_verification_email(email, name, code)
             return jsonify({
                 "message": "Verification code sent to your email.",
                 "email": email,
@@ -208,11 +228,8 @@ def register():
         "created_at": datetime.datetime.utcnow(),
     })
 
-    # Send OTP email
-    try:
-        _send_verification_email(email, name, code)
-    except Exception as e:
-        return jsonify({"error": f"Failed to send verification email: {str(e)}"}), 500
+    # Send OTP email (async — runs in background thread)
+    _send_verification_email(email, name, code)
 
     return jsonify({
         "message": "Verification code sent to your email.",
@@ -300,11 +317,8 @@ def resend_code():
         "created_at": datetime.datetime.utcnow(),
     })
 
-    # Send email
-    try:
-        _send_verification_email(email, user["name"], code)
-    except Exception as e:
-        return jsonify({"error": f"Failed to send email: {str(e)}"}), 500
+    # Send email (async)
+    _send_verification_email(email, user["name"], code)
 
     return jsonify({"message": "New verification code sent to your email."}), 200
 
