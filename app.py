@@ -46,7 +46,7 @@ def home():
     return jsonify({
         "status": "running",
         "service": "Fraud Detection API",
-        "version": "3.1",
+        "version": "3.2",
         "endpoints": {
             "POST /predict": "Analyze a transaction for fraud",
             "POST /auth/register": "Create a new user account (sends OTP)",
@@ -56,6 +56,32 @@ def home():
             "GET /auth/me": "Get current user info (requires JWT)"
         }
     })
+
+
+@app.route("/debug/mail")
+def debug_mail():
+    username = os.environ.get("MAIL_USERNAME", "")
+    password = os.environ.get("MAIL_PASSWORD", "")
+    result = {
+        "mail_username_set": bool(username),
+        "mail_username_value": username[:3] + "***" if username else "NOT SET",
+        "mail_password_set": bool(password),
+        "mail_password_length": len(password) if password else 0,
+        "mail_server": app.config.get("MAIL_SERVER"),
+        "mail_port": app.config.get("MAIL_PORT"),
+        "mail_use_tls": app.config.get("MAIL_USE_TLS"),
+    }
+    # Try SMTP connection
+    try:
+        import smtplib
+        server = smtplib.SMTP(app.config["MAIL_SERVER"], app.config["MAIL_PORT"], timeout=10)
+        server.starttls()
+        server.login(username, password)
+        server.quit()
+        result["smtp_connection"] = "SUCCESS"
+    except Exception as e:
+        result["smtp_connection"] = f"FAILED: {str(e)}"
+    return jsonify(result)
 
 
 if __name__ == "__main__":
