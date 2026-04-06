@@ -9,4 +9,4 @@ joblib
 pymongo[srv]
 bcrypt
 PyJWT
-flask-mail
+requests

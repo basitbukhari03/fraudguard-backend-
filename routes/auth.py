@@ -1,18 +1,10 @@
-"""
-Auth Route Blueprint
----------------------
-Exposes /auth/register, /auth/verify, /auth/resend-code,
-/auth/login, and /auth/me endpoints.
-Email verification with OTP is required before login.
-"""
-
 import os
 import re
 import random
 import datetime
 import threading
+import requests as http_requests
 from flask import Blueprint, request, jsonify, current_app
-from flask_mail import Message
 import bcrypt
 import jwt
 from services.database import users_collection, verification_codes
@@ -68,25 +60,13 @@ def _generate_otp() -> str:
 
 
 def _send_verification_email(email: str, name: str, code: str):
-    """Send OTP verification email using Flask-Mail in background thread."""
-    mail = current_app.extensions.get("mail")
-    if not mail:
-        print("[MAIL] Mail service not configured — skipping email.")
+    """Send OTP verification email using Resend HTTP API in background thread."""
+    api_key = current_app.config.get("RESEND_API_KEY", "")
+    if not api_key:
+        print("[MAIL] RESEND_API_KEY not set — skipping email.")
         return
 
-    # Check if credentials are set
-    username = current_app.config.get("MAIL_USERNAME", "")
-    password = current_app.config.get("MAIL_PASSWORD", "")
-    if not username or not password:
-        print(f"[MAIL] MAIL_USERNAME or MAIL_PASSWORD not set. Username='{username}', Password={'SET' if password else 'EMPTY'}")
-        return
-
-    msg = Message(
-        subject=f"FraudGuard — Your Verification Code: {code}",
-        recipients=[email],
-    )
-
-    msg.html = f"""
+    html_body = f"""
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto;
                 background: #0A0E1A; color: #FFFFFF; padding: 40px; border-radius: 16px;">
         <div style="text-align: center; margin-bottom: 30px;">
@@ -117,13 +97,26 @@ def _send_verification_email(email: str, name: str, code: str):
     """
 
     # Send in background thread so request doesn't hang
-    app = current_app._get_current_object()
-
     def send_async():
         try:
-            with app.app_context():
-                mail.send(msg)
+            r = http_requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": "FraudGuard <onboarding@resend.dev>",
+                    "to": [email],
+                    "subject": f"FraudGuard — Your Verification Code: {code}",
+                    "html": html_body,
+                },
+                timeout=15,
+            )
+            if r.status_code == 200:
                 print(f"[MAIL] ✅ Verification email sent to {email}")
+            else:
+                print(f"[MAIL] ❌ Resend API error {r.status_code}: {r.text}")
         except Exception as e:
             print(f"[MAIL] ❌ Failed to send email to {email}: {str(e)}")
 
