@@ -106,7 +106,7 @@ def _send_verification_email(email: str, name: str, code: str):
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": "FraudGuard <onboarding@resend.dev>",
+                    "from": "FraudGuard <noreply@fraudguard.live>",
                     "to": [email],
                     "subject": f"FraudGuard — Your Verification Code: {code}",
                     "html": html_body,
